@@ -140,17 +140,18 @@ def entropy_gradient(c, Y, K, b, w):
 
     S_gradient = (-1/n)*(c - np.multiply(np.exp(S),enc*np.divide(1, encT*np.exp(S))))
 
-    print(S_gradient.shape)
     z_gradient = w.T * S_gradient
-    print(z_gradient.shape)
     K_gradient = J_K_T(K, Y, b, z_gradient).reshape(K.shape)
     b_gradient = J_b_T(K, Y, b, z_gradient)
     w_gradient = S_gradient * z.T
+    # K.T * sigma_prime(K, Y, b)
+    # sigma_prime(K, Y, b).T * z_gradient
+    # y_gradient = K.T * sigma_prime(K, Y, b).T * z_gradient
     return {"z": z_gradient, "K": K_gradient, "b": b_gradient, "w": w_gradient}
 
 
 class Deep_NN():
-    def __init__(self, c, Y, Ks, bs, layers=1, gamma = 0.5, w_init = None):
+    def __init__(self, c, Y, Ks, bs, layers=1, gamma = 0.5, beta = 0.5, w_init = None):
         self.c = c
         self.Y = Y
         assert len(Ks) == len(bs)
@@ -158,6 +159,7 @@ class Deep_NN():
         self.bs = bs
         self.layers = layers
         self.gamma = gamma
+        self.beta= beta
         if w_init is not None:
             self.w = w_init
         else:
@@ -166,12 +168,43 @@ class Deep_NN():
 
     def forward_propagate(self):
         y_i = self.Y
+        self.Ys = []
         for K_i, b_i in zip(self.Ks[:-1], self.bs[:-1]):
-            # This won't run until we know what p_i is
+            self.Ys.append(y_i)
             y_i_1 = y_i + np.multiply(self.gamma, sigma(K_i, y_i, b_i))
+
             y_i = y_i_1
 
+        self.Ys.append(y_i)
+
         return entropy(self.c, y_i, self.Ks[-1], self.bs[-1], self.w)
+
+
+    def back_propagate(self):
+        self.Ps = []
+        P_j1 = np.matrix(np.zeros(self.Y.shape))
+
+        # Not implemented yet
+        delta_y = entropy_gradient(self.c, self.Ys[-1], self.Ks[-1], self.bs[-1], self.w)['z']
+        for K, b in zip(self.Ks[::-1], self.bs[::-1]):
+            # Unsure of third term
+            P = P_j1 + self.beta * (delta_y) + K.T * np.multiply(P_j1,sigma_prime(K, self.Ys[-1], b))
+            self.Ps.insert(0, P)
+            P_j1 = P
+
+
+    def design_equations(self):
+        """
+        Update w, Ks, and bs
+        """
+        K_integral = 0
+        b_integral = 0
+        for P, K, Y, b in zip(self.Ps, self.Ks, self.Ys, self.bs):
+            # Need to figure out dimensions to include sigma_prime
+            K_integral += P * Y.T
+            b_integral += np.multiply(P, sigma_prime)
+        K_integral = K_integral / len(self.Ys)
+        b_integral = b_integral / len(self.Ys)
 
     def classify(self, Ytest):
         y_i = Ytest
