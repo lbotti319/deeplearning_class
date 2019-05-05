@@ -6,13 +6,13 @@ from helper_functions import get_feature_data, get_label_data, calculate_accurac
 from sklearn.metrics import accuracy_score
 
 
-def sigma(K, Y, b):
+def tanh(K, Y, b):
     KY = K*Y
     shape = KY.shape
     inner = KY + b*np.ones(shape)
     return np.tanh(inner)
 
-def sigma_prime(K, Y, b):
+def tanh_prime(K, Y, b):
     """
     Inverse of tanh(x) is 1 - tanh(x)^2
     source: http://ronny.rest/blog/post_2017_08_16_tanh/
@@ -20,6 +20,24 @@ def sigma_prime(K, Y, b):
     a = sigma(K, Y, b)
     shape = a.shape
     return np.ones(shape) - np.multiply(a, a)
+
+def ReLU(K, Y, b):
+    KY = K*Y
+    shape = KY.shape
+    inner = KY + b*np.ones(shape)
+    return np.multiply(inner, (inner > 0))
+
+def ReLU_prime(K, Y, b):
+    KY = K*Y
+    shape = KY.shape
+    inner = KY + b*np.ones(shape)
+    inner = np.array(inner)
+    return np.matrix((inner > 0)*1.0)
+
+def sigma(K,Y,b):
+    return tanh(K,Y,b)
+def sigma_prime(K,Y,b):
+    return tanh_prime(K, Y, b)
 
 def J_K(K, Y, b, v):
     shape = K.shape
@@ -138,57 +156,78 @@ def entropy_gradient(c, Y, K, b, w):
     enc = np.matrix(np.ones((nc,1)))
     encT = enc.T
 
+    # print("S")
+    # print(np.exp(S)[:5:,10])
+    # print("S_fin")
+
     S_gradient = (-1/n)*(c - np.multiply(np.exp(S),enc*np.divide(1, encT*np.exp(S))))
 
     z_gradient = w.T * S_gradient
     K_gradient = J_K_T(K, Y, b, z_gradient).reshape(K.shape)
     b_gradient = J_b_T(K, Y, b, z_gradient)
     w_gradient = S_gradient * z.T
+    y_gradient = J_Y(K, Y, b, z_gradient).reshape(Y.shape)
     # K.T * sigma_prime(K, Y, b)
     # sigma_prime(K, Y, b).T * z_gradient
     # y_gradient = K.T * sigma_prime(K, Y, b).T * z_gradient
-    return {"z": z_gradient, "K": K_gradient, "b": b_gradient, "w": w_gradient}
+    return {"z": z_gradient, "K": K_gradient, "b": b_gradient, "w": w_gradient, "Y": y_gradient}
 
 
 class Deep_NN():
-    def __init__(self, c, Y, Ks, bs, layers=1, gamma = 0.5, beta = 0.5, w_init = None):
+    def __init__(self, c, Y, Ks, bs, gamma = 0.5, beta = 0.5, w_init = None):
         self.c = c
         self.Y = Y
         assert len(Ks) == len(bs)
         self.Ks = Ks
         self.bs = bs
-        self.layers = layers
         self.gamma = gamma
         self.beta= beta
+        self.nf = Y.shape[0]
+        self.n = Y.shape[1]
+
         if w_init is not None:
             self.w = w_init
         else:
             shape = (c.shape[0], Ks[-1].shape[0])
-            self.w = np.random.random(shape)
+            self.w = np.random.normal(shape)
+            self.w = np.zeros((shape))
 
     def forward_propagate(self):
         y_i = self.Y
+        # print("Y_0")
+        # print(y_i)
+        # print("Y_0_fin")
         self.Ys = []
         for K_i, b_i in zip(self.Ks[:-1], self.bs[:-1]):
             self.Ys.append(y_i)
             y_i_1 = y_i + np.multiply(self.gamma, sigma(K_i, y_i, b_i))
+            # print("sigma")
+            # print(sigma(K_i, y_i, b_i)[:5, :10])
 
             y_i = y_i_1
+            # print("y")
+            # print(y_i[:5, :10])
+            # print("y_fin")
 
         self.Ys.append(y_i)
 
-        return entropy(self.c, y_i, self.Ks[-1], self.bs[-1], self.w)
+        return self.entropy()
 
+    def entropy(self):
+        return entropy(self.c, self.Ys[-1], self.Ks[-1], self.bs[-1], self.w)
 
     def back_propagate(self):
         self.Ps = []
-        P_j1 = np.matrix(np.zeros(self.Y.shape))
 
         # Not implemented yet
         delta_y = entropy_gradient(self.c, self.Ys[-1], self.Ks[-1], self.bs[-1], self.w)['z']
+        P_j1 = delta_y
         for K, b in zip(self.Ks[::-1], self.bs[::-1]):
             # Unsure of third term
             P = P_j1 + self.beta * (delta_y) + K.T * np.multiply(P_j1,sigma_prime(K, self.Ys[-1], b))
+            # print("p")
+            # print(P[:5, :10])
+            # print("p_fin")
             self.Ps.insert(0, P)
             P_j1 = P
 
@@ -197,15 +236,18 @@ class Deep_NN():
         """
         Update w, Ks, and bs
         """
-        K_integral = 0
-        b_integral = 0
-        for P, K, Y, b in zip(self.Ps, self.Ks, self.Ys, self.bs):
-            # Need to figure out dimensions to include sigma_prime
-            K_integral += P * Y.T
-            b_integral += np.multiply(P, sigma_prime)
-        K_integral = K_integral / len(self.Ys)
-        b_integral = b_integral / len(self.Ys)
+        gradient = entropy_gradient(self.c, self.Ys[-1], self.Ks[-1], self.bs[-1], self.w)
+        self.w -= gradient['w']
 
+        for k, x in enumerate(zip(self.Ps, self.Ks, self.Ys, self.bs)):
+            # Need to figure out dimensions to include sigma_prime
+            P, K, Y, b = x
+            self.Ks[k] = K -  Y*np.multiply(P, sigma_prime(K, Y, b)).T
+            # print("K")
+            # print(self.Ks[k][:5, :5])
+            # print("K_fin")
+            self.bs[k] = b - (P.T * sigma_prime(K, Y, b)).trace()[0,0]
+    
     def classify(self, Ytest):
         y_i = Ytest
         for K_i, b_i in zip(self.Ks[:-1], self.bs[:-1]):
@@ -214,14 +256,24 @@ class Deep_NN():
             y_i = y_i_1
 
         final_probabilities = self.w * sigma(self.Ks[-1], y_i, self.bs[-1])
-        labels = pd.DataFrame(final_probabilities).idxmax(axis=1)
+        labels = pd.DataFrame(final_probabilities).idxmax(axis=0)
         return labels
 
     def score(self, Ytest, cTest):
         labels = self.classify(Ytest)
-        true_labels = pd.DataFrame(cTest).idxmax(axis=1)
+        true_labels = pd.DataFrame(cTest).idxmax(axis=0)
         accuracy = accuracy_score(true_labels.values, labels.values)
         return accuracy
+
+    def fit(self, iterations=2):
+        self.forward_propagate()
+        current_entropy = self.entropy()
+        for i in range(iterations):
+            # print("iteration", i)
+            self.forward_propagate()
+            self.back_propagate()
+            self.design_equations()
+
 
 
 
