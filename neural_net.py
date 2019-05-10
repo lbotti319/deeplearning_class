@@ -25,7 +25,7 @@ def ReLU(K, Y, b):
     KY = K*Y
     shape = KY.shape
     inner = KY + b*np.ones(shape)
-    return np.multiply(inner, (inner > 0))
+    return np.multiply(inner, (inner > 0)*1.0)
 
 def ReLU_prime(K, Y, b):
     KY = K*Y
@@ -156,17 +156,14 @@ def entropy_gradient(c, Y, K, b, w):
     enc = np.matrix(np.ones((nc,1)))
     encT = enc.T
 
-    # print("S")
-    # print(np.exp(S)[:5:,10])
-    # print("S_fin")
-
     S_gradient = (-1/n)*(c - np.multiply(np.exp(S),enc*np.divide(1, encT*np.exp(S))))
 
     z_gradient = w.T * S_gradient
+
     K_gradient = J_K_T(K, Y, b, z_gradient).reshape(K.shape)
     b_gradient = J_b_T(K, Y, b, z_gradient)
     w_gradient = S_gradient * z.T
-    y_gradient = J_Y(K, Y, b, z_gradient).reshape(Y.shape)
+    y_gradient = np.multiply(z_gradient, K.T * sigma_prime(K,Y,b))
     # K.T * sigma_prime(K, Y, b)
     # sigma_prime(K, Y, b).T * z_gradient
     # y_gradient = K.T * sigma_prime(K, Y, b).T * z_gradient
@@ -174,23 +171,34 @@ def entropy_gradient(c, Y, K, b, w):
 
 
 class Deep_NN():
-    def __init__(self, c, Y, Ks, bs, gamma = 0.5, beta = 0.5, w_init = None):
+    def __init__(self, c, Y, layers=2, alpha = 0.5, beta = 0.5, gamma = 0.1, mat_init = "random"):
         self.c = c
         self.Y = Y
-        assert len(Ks) == len(bs)
-        self.Ks = Ks
-        self.bs = bs
-        self.gamma = gamma
-        self.beta= beta
+        self.layers = layers
         self.nf = Y.shape[0]
         self.n = Y.shape[1]
+        self.bs = [0 for _ in range(layers)]
+        self.alpha = alpha
+        self.beta = beta
+        self.gamma = gamma
+        self.Ps = []
+        self.Ys = []
 
-        if w_init is not None:
-            self.w = w_init
+        self.bs = [0 for _ in range(layers)]
+        shape = (c.shape[0], self.nf)
+        if mat_init == "random":
+            self.w = np.matrix(np.random.normal(scale=0.001, size=shape))
+            self.Ks = [np.matrix(np.random.normal(scale=0.001, size=(self.nf,self.nf))) for _ in range(layers)]
+        elif mat_init == "zeros":
+            self.w = np.matrix(np.zeros((shape)))
+            self.Ks = [np.matrix(np.zeros((self.nf,self.nf))) for _ in range(layers)]
         else:
-            shape = (c.shape[0], Ks[-1].shape[0])
-            self.w = np.random.normal(shape)
-            self.w = np.zeros((shape))
+            raise ValueError("mat_init should be either 'random' or 'zeros'")
+
+    def entropy(self):
+        return entropy(self.c, self.Ys[-1], self.Ks[-1], self.bs[-1], self.w)
+    def entropy_gradient(self):
+        return entropy_gradient(self.c, self.Ys[-1], self.Ks[-1], self.bs[-1], self.w)
 
     def forward_propagate(self):
         y_i = self.Y
@@ -200,7 +208,7 @@ class Deep_NN():
         self.Ys = []
         for K_i, b_i in zip(self.Ks[:-1], self.bs[:-1]):
             self.Ys.append(y_i)
-            y_i_1 = y_i + np.multiply(self.gamma, sigma(K_i, y_i, b_i))
+            y_i_1 = y_i + (self.alpha * sigma(K_i, y_i, b_i))
             # print("sigma")
             # print(sigma(K_i, y_i, b_i)[:5, :10])
 
@@ -213,21 +221,18 @@ class Deep_NN():
 
         return self.entropy()
 
-    def entropy(self):
-        return entropy(self.c, self.Ys[-1], self.Ks[-1], self.bs[-1], self.w)
-
     def back_propagate(self):
         self.Ps = []
 
         # Not implemented yet
         delta_y = entropy_gradient(self.c, self.Ys[-1], self.Ks[-1], self.bs[-1], self.w)['z']
+
         P_j1 = delta_y
-        for K, b in zip(self.Ks[::-1], self.bs[::-1]):
-            # Unsure of third term
-            P = P_j1 + self.beta * (delta_y) + K.T * np.multiply(P_j1,sigma_prime(K, self.Ys[-1], b))
-            # print("p")
-            # print(P[:5, :10])
-            # print("p_fin")
+        for K, b, Y in zip(self.Ks[::-1], self.bs[::-1], self.Ys[::-1]):
+
+            P = P_j1 + self.beta * (delta_y) + K.T * np.multiply(P_j1,sigma_prime(K, Y, b))
+
+
             self.Ps.insert(0, P)
             P_j1 = P
 
@@ -237,22 +242,22 @@ class Deep_NN():
         Update w, Ks, and bs
         """
         gradient = entropy_gradient(self.c, self.Ys[-1], self.Ks[-1], self.bs[-1], self.w)
-        self.w -= gradient['w']
+        self.w = self.w -  self.gamma * gradient['w']
 
         for k, x in enumerate(zip(self.Ps, self.Ks, self.Ys, self.bs)):
             # Need to figure out dimensions to include sigma_prime
             P, K, Y, b = x
-            self.Ks[k] = K -  Y*np.multiply(P, sigma_prime(K, Y, b)).T
+            self.Ks[k] = K -  self.gamma * Y*np.multiply(P, sigma_prime(K, Y, b)).T
             # print("K")
             # print(self.Ks[k][:5, :5])
             # print("K_fin")
-            self.bs[k] = b - (P.T * sigma_prime(K, Y, b)).trace()[0,0]
+            self.bs[k] = b - self.gamma * (P.T * sigma_prime(K, Y, b)).trace()[0,0]
     
     def classify(self, Ytest):
         y_i = Ytest
         for K_i, b_i in zip(self.Ks[:-1], self.bs[:-1]):
             # This won't run until we know what p_i is
-            y_i_1 = y_i + np.multiply(self.gamma, sigma(K_i, y_i, b_i))
+            y_i_1 = y_i + np.multiply(self.alpha, sigma(K_i, y_i, b_i))
             y_i = y_i_1
 
         final_probabilities = self.w * sigma(self.Ks[-1], y_i, self.bs[-1])
@@ -265,14 +270,28 @@ class Deep_NN():
         accuracy = accuracy_score(true_labels.values, labels.values)
         return accuracy
 
-    def fit(self, iterations=2):
-        self.forward_propagate()
-        current_entropy = self.entropy()
+    def fit(self, iterations=3, tolerance=0.001):
+        current_entropy = self.forward_propagate()
+        old_derivatives = self.entropy_gradient()
         for i in range(iterations):
             # print("iteration", i)
-            self.forward_propagate()
             self.back_propagate()
             self.design_equations()
+            new_entropy = self.forward_propagate()
+            relative_error = (current_entropy - new_entropy) / current_entropy
+            current_entropy = new_entropy
+            new_derivatives = self.entropy_gradient()
+
+            norm_sum = (np.linalg.norm(old_derivatives['w'] - new_derivatives['w']) + 
+                np.linalg.norm(old_derivatives['K'] - new_derivatives['K']) +
+                np.linalg.norm(old_derivatives['b'] - new_derivatives['b']))
+            if norm_sum <= tolerance and i>=10:
+                print("breaking on iteration", i)
+                print("with norm of diff", norm_sum)
+                break
+
+            old_derivatives = new_derivatives
+
 
 
 
